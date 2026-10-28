@@ -12,10 +12,20 @@ Unity script ───────┘
 ## Try it
 
 ```
-pip install websockets
-python hub.py                  # the hub
-python fake_client.py --scroll # stands in for the extension: a bar of snow-catching rectangle
+pip install websockets pillow
+python hub.py           # the hub
+python fake_client.py   # stands in for the extension, see below
 ```
+
+`fake_client.py` covers the desktop with a dimmed, low quality picture of your screen. Press and drag to draw a rectangle
+(green: snow can settle on it, red: too small); let go and the picture disappears, leaving an **invisible window** that
+Snowhush puts snow on. A small panel lets you draw more, undo, clear all or quit. `python fake_client.py --demo` sends
+a bar moving up and down instead, without any window.
+
+If no snow settles, check that:
+- Snowhush was built from this branch and started with `SNOWHUSH_HUB` set; `%LOCALAPPDATA%\Snowhush\snowhush.log` then has a `hub:` line.
+- "Snow on Windows" is on and "Behind Windows" is off in the tray menu: with either the other way round, no surfaces are used.
+- The rectangle has room above it (not touching the top of the display) and is at least about 80 × 16 DIPs.
 
 Start Snowhush with the hub's address in its environment (off otherwise):
 

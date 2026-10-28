@@ -13,6 +13,7 @@ Then start Snowhush with SNOWHUSH_HUB=ws://127.0.0.1:8765 in its environment.
 
 import argparse
 import asyncio
+import json
 import logging
 
 from websockets.asyncio.server import serve
@@ -20,13 +21,30 @@ from websockets.asyncio.server import serve
 MAX_MESSAGE = 1 << 20
 
 clients = set()
+# The last "surfaces" message of each source, for a client that connects later: Snowhush after a restart, say.
+latest = {}
+
+
+def remember(message):
+    try:
+        data = json.loads(message)
+        source = data["source"]
+        if data["type"] == "surfaces":
+            latest[source] = message
+        elif data["type"] == "clear":
+            latest.pop(source, None)
+    except (ValueError, KeyError, TypeError):
+        pass
 
 
 async def handle(connection):
     clients.add(connection)
+    for message in list(latest.values()):
+        await connection.send(message)
     logging.info("connected: %s (%d clients)", connection.remote_address, len(clients))
     try:
         async for message in connection:
+            remember(message)
             others = [client for client in clients if client is not connection]
             for client in others:
                 try:
