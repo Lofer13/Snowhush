@@ -19,8 +19,17 @@ python fake_client.py   # stands in for the extension, see below
 
 `fake_client.py` covers the desktop with a dimmed, low quality picture of your screen. Press and drag to draw a rectangle
 (green: snow can settle on it, red: too small); let go and the picture disappears, leaving an **invisible window** that
-Snowhush puts snow on. A small panel lets you draw more, undo, clear all or quit. `python fake_client.py --demo` sends
-a bar moving up and down instead, without any window.
+Snowhush puts snow on. A small panel lets you draw more, undo, clear all or quit.
+
+- `--mode windows` (default) makes a **real window** for each rectangle, so even a Snowhush without these changes
+  sees it, and no hub is needed. No border, no title bar, no taskbar button, never takes focus. Snowhush skips
+  windows that are click-through by style, mostly transparent or cut out by a colour key (they are overlays and
+  widgets, not something snow rests on), so the window avoids all of that: nothing is drawn into it (so it is invisible),
+  and its shape is cut down to a 2 px strip along the top edge (so the rest is click-through). Needs only `pip install pillow`.
+- `--mode hub` sends the rectangles to the hub for a Snowhush started with `SNOWHUSH_HUB`.
+- `--show` makes the windows visible (blue boxes). If snow lands on those but not on the invisible ones, Snowhush
+  skips the invisible ones; if it lands on neither, "Snow on Windows" is off, "Behind Windows" is on, or it isn't this build.
+- `--demo` sends a bar moving up and down to the hub, without any window.
 
 If no snow settles, check that:
 - Snowhush was built from this branch and started with `SNOWHUSH_HUB` set; `%LOCALAPPDATA%\Snowhush\snowhush.log` then has a `hub:` line.

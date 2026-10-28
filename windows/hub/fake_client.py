@@ -1,30 +1,45 @@
-"""Stands in for the Firefox extension, to try the snow on invisible windows.
+"""Draws invisible windows for the snow to settle on, to try Snowhush without a browser extension.
 
-    pip install websockets pillow
+    pip install pillow            (and websockets, for --mode hub)
     python fake_client.py
 
 A dimmed, low quality picture of your screen covers the desktop. Press the mouse and drag to draw a rectangle, as when
 selecting icons on the desktop; green is big enough for snow to settle on, red is too small. When you let go, the picture
-goes away and the rectangle stays behind as an invisible window: the hub passes it on and Snowhush lets snow settle on
-its top edge. A small panel keeps count and lets you draw another one, undo or remove them all.
+goes away and the rectangle stays behind as an invisible window. A small panel keeps count and lets you draw another
+one, undo or remove them all.
 
-Coordinates sent are physical pixels of the virtual desktop, y pointing down (see ../README.md).
-Start Snowhush with SNOWHUSH_HUB set, with "Snow on Windows" on and "Behind Windows" off.
-    python fake_client.py --demo        no window: one bar that moves up and down, for 20 seconds
+Two ways to make the window real to Snowhush:
+
+  --mode windows   (default) A real top-level window, so even an unchanged Snowhush sees it: no border, no title bar,
+                   no taskbar button, never takes focus, and you can click through it. It has to avoid what Snowhush
+                   skips on purpose: windows that are click-through by style, or mostly transparent (alpha under 30%),
+                   or cut out by a colour key, or drawn with per-pixel alpha. So it is not "layered" at all. It is
+                   invisible because nothing is ever drawn into it, and it is click-through because its shape
+                   is cut down to a thin strip along the top edge, the part the snow rests on.
+  --mode hub       Sends the rectangles to the hub (hub.py) for a Snowhush started with SNOWHUSH_HUB.
+
+  --show           Makes the windows visible (a blue box), to see where they are and tell "Snowhush ignores it"
+                   from "Snowhush doesn't work at all".
+  --demo           No window: one bar that moves up and down for 20 seconds, sent to the hub.
+
+Coordinates are physical pixels of the virtual desktop, y pointing down (see README.md).
+In the tray menu of Snowhush, "Snow on Windows" must be on and "Behind Windows" off.
 """
 
 import argparse
+import atexit
 import ctypes
 import json
 import math
 import sys
 import time
 
-from websockets.sync.client import connect
-
-# What Snowhush settles on: wide and tall enough (DIPs), see src/remote.rs.
+# What Snowhush settles on, in DIPs: its window list takes 80 x 40 and up (src/tracker.rs), the hub's rectangles 80 x 16.
 MIN_WIDTH = 80
-MIN_HEIGHT = 16
+MIN_HEIGHT_WINDOW = 40
+MIN_HEIGHT_HUB = 16
+# How much of a window is left to click on: just a strip along its top edge, in physical pixels.
+STRIP = 2
 
 
 def message(source, rects):
@@ -46,6 +61,8 @@ class Hub:
         self.socket = None
 
     def send(self, text):
+        from websockets.sync.client import connect
+
         for _ in range(2):
             try:
                 if self.socket is None:
@@ -62,6 +79,103 @@ class Hub:
                 self.socket.close()
             except Exception:
                 pass
+
+
+class FakeWindows:
+    """Real windows, one per rectangle, that Snowhush takes for ordinary ones. Windows only; needs a message loop in
+    this thread (Tk's is one), or Windows takes the program for hung and puts a ghost over its windows."""
+
+    WS_POPUP = 0x80000000
+    WS_VISIBLE = 0x10000000
+    WS_EX_TOPMOST = 0x00000008
+    WS_EX_TOOLWINDOW = 0x00000080  # no taskbar button, not in Alt+Tab
+    WS_EX_NOACTIVATE = 0x08000000  # never takes focus
+    WS_EX_NOREDIRECTIONBITMAP = 0x00200000  # no surface to draw on: shows nothing
+    SWP_NOACTIVATE = 0x0010
+
+    def __init__(self, show):
+        from ctypes import wintypes
+
+        self.show = show
+        self.windows = []  # (handle, x, y, w, h)
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self.gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        user32, gdi32 = self.user32, self.gdi32
+
+        class WNDCLASSW(ctypes.Structure):
+            _fields_ = [
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", ctypes.c_void_p),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HANDLE),
+                ("hIcon", wintypes.HANDLE),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HANDLE),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        kernel32.GetModuleHandleW.restype = wintypes.HANDLE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+        user32.RegisterClassW.restype = wintypes.ATOM
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, wintypes.HWND, wintypes.HANDLE, wintypes.HANDLE, ctypes.c_void_p,
+        ]  # fmt: skip
+        user32.DefWindowProcW.restype = ctypes.c_ssize_t
+        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        ]  # fmt: skip
+        user32.DestroyWindow.argtypes = [wintypes.HWND]
+        gdi32.CreateRectRgn.restype = wintypes.HANDLE
+        gdi32.CreateRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        gdi32.CreateSolidBrush.restype = wintypes.HANDLE
+        gdi32.CreateSolidBrush.argtypes = [wintypes.DWORD]
+
+        self.instance = kernel32.GetModuleHandleW(None)
+        self.class_name = "SnowhushFakeWindow"
+        window_class = WNDCLASSW()
+        # The system's own procedure: nothing here ever needs to answer a message differently.
+        window_class.lpfnWndProc = ctypes.cast(user32.DefWindowProcW, ctypes.c_void_p).value
+        window_class.hInstance = self.instance
+        window_class.lpszClassName = self.class_name
+        window_class.hbrBackground = gdi32.CreateSolidBrush(0xE0A050) if show else None  # BGR: a light blue
+        if not user32.RegisterClassW(ctypes.byref(window_class)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        atexit.register(self.sync, [])
+
+    def sync(self, rects):
+        """Makes the windows match these (x, y, w, h) rectangles: moves the ones that stay, adds, removes."""
+        wanted = [tuple(int(round(v)) for v in rect) for rect in rects]
+        # Keeps windows that are still wanted where they are; a window is cheaper to leave than to remake.
+        kept = []
+        for window in self.windows:
+            if window[1:] in wanted:
+                wanted.remove(window[1:])
+                kept.append(window)
+            else:
+                self.user32.DestroyWindow(window[0])
+        self.windows = kept + [self.create(*rect) for rect in wanted]
+
+    def create(self, x, y, w, h):
+        style = self.WS_EX_TOPMOST | self.WS_EX_TOOLWINDOW | self.WS_EX_NOACTIVATE
+        if not self.show:
+            style |= self.WS_EX_NOREDIRECTIONBITMAP
+        handle = self.user32.CreateWindowExW(
+            style, self.class_name, "Snowhush fake window", self.WS_POPUP | self.WS_VISIBLE, x, y, w, h, None, None, self.instance, None
+        )
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not self.show:
+            # Only a strip along the top is part of the window: the rest of the rectangle is click-through, not part of it.
+            self.user32.SetWindowRgn(handle, self.gdi32.CreateRectRgn(0, 0, w, min(STRIP, h)), True)
+        return (handle, x, y, w, h)
 
 
 def virtual_screen():
@@ -93,7 +207,10 @@ def run_window(arguments):
         print("The drawing window needs Windows: it covers the desktop Snowhush runs on.")
         return 1
     left, top, width, height, scale = screen
-    hub = Hub(arguments.url)
+    by_hub = arguments.mode == "hub"
+    min_height = MIN_HEIGHT_HUB if by_hub else MIN_HEIGHT_WINDOW
+    hub = Hub(arguments.url) if by_hub else None
+    fakes = None if by_hub else FakeWindows(arguments.show)
     rects = []
 
     root = tk.Tk()
@@ -104,8 +221,16 @@ def run_window(arguments):
     overlay = None
 
     def publish():
-        ok = hub.send(message(arguments.source, rects)) if rects else hub.send(json.dumps({"type": "clear", "source": arguments.source}))
-        status.set(f"{len(rects)} invisible window(s)" + ("" if ok else " - hub not reachable at " + arguments.url))
+        problem = ""
+        try:
+            if by_hub:
+                sent = hub.send(message(arguments.source, rects) if rects else json.dumps({"type": "clear", "source": arguments.source}))
+                problem = "" if sent else " - hub not reachable at " + arguments.url
+            else:
+                fakes.sync(rects)
+        except Exception as error:
+            problem = f" - {error}"
+        status.set(f"{len(rects)} invisible window(s)" + problem)
 
     def low_quality():
         picture = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
@@ -136,7 +261,7 @@ def run_window(arguments):
 
         def ok(x0, y0, x1, y1):
             _, _, w, h = normalized(x0, y0, x1, y1)
-            return w >= MIN_WIDTH * scale and h >= MIN_HEIGHT * scale
+            return w >= MIN_WIDTH * scale and h >= min_height * scale
 
         def press(event):
             shape["start"] = (event.x, event.y)
@@ -157,13 +282,16 @@ def run_window(arguments):
             if ok(x0, y0, event.x, event.y):
                 x, y, w, h = normalized(x0, y0, event.x, event.y)
                 rects.append((x + left, y + top, w, h))
+                finish()  # the picture is gone before the window appears
                 publish()
-            finish()
+            else:
+                finish()
 
         def finish(_event=None):
             nonlocal overlay
-            overlay.destroy()
-            overlay = None
+            if overlay is not None:
+                overlay.destroy()
+                overlay = None
             root.deiconify()
 
         canvas.bind("<ButtonPress-1>", press)
@@ -184,7 +312,8 @@ def run_window(arguments):
     def quit_():
         rects.clear()
         publish()
-        hub.close()
+        if hub is not None:
+            hub.close()
         root.destroy()
 
     tk.Label(root, textvariable=status, padx=12, pady=8).pack()
@@ -215,10 +344,12 @@ def run_demo(arguments):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--mode", choices=("windows", "hub"), default="windows")
+    parser.add_argument("--show", action="store_true", help="make the windows visible, to see where they are")
     parser.add_argument("--url", default="ws://127.0.0.1:8765")
     parser.add_argument("--source", default="fake")
     parser.add_argument("--blur", type=int, default=8, help="how much quality the picture loses: 1 none, 8 default")
-    parser.add_argument("--demo", action="store_true", help="no window, a moving bar")
+    parser.add_argument("--demo", action="store_true", help="no window, a moving bar sent to the hub")
     parser.add_argument("--hold", type=float, default=20, help="seconds for --demo")
     arguments = parser.parse_args()
     sys.exit(run_demo(arguments) if arguments.demo else run_window(arguments))
