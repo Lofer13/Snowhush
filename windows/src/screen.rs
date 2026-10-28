@@ -20,6 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, Error, PCWSTR, Result, w};
 
 use snowhush::geometry::V2;
+use snowhush::remote::Hub;
 use snowhush::simulation::{Pace, SnowSimulation, WindowId, WindowSurface};
 
 use crate::desktop::DesktopLayer;
@@ -275,7 +276,7 @@ impl Screen {
     }
 
     /// Steps the snow and draws it if anything visible changed; returns whether it drew.
-    /// `windows` is left out while snow on windows is off.
+    /// `windows` is left out while snow on windows is off. `hub` brings the surfaces other programs report, if one is connected.
     pub fn frame(
         &mut self,
         gpu: &Gpu,
@@ -285,11 +286,12 @@ impl Screen {
         light: [f32; 3],
         time: f32,
         windows: Option<&Tracker>,
+        hub: Option<&Hub>,
     ) -> Result<bool> {
         let dt = if self.last_step == 0 { 1.0 / 60.0 } else { clock.seconds(now - self.last_step).min(0.05) as f32 };
         self.last_step = now;
         if let Some(tracker) = windows {
-            self.follow(tracker, clock, now);
+            self.follow(tracker, hub, clock, now);
         }
         let changed = self.simulation.step(dt, self.cursor());
 
@@ -312,12 +314,18 @@ impl Screen {
     }
 
     /// Hands the simulation the windows on this display when they changed.
-    fn follow(&mut self, tracker: &Tracker, clock: &Clock, now: i64) {
-        if tracker.generation == self.windows_seen {
+    fn follow(&mut self, tracker: &Tracker, hub: Option<&Hub>, clock: &Clock, now: i64) {
+        // Both counts only go up, so their sum changes whenever either does.
+        let generation = tracker.generation + hub.map_or(0, Hub::generation);
+        if generation == self.windows_seen {
             return;
         }
-        self.windows_seen = tracker.generation;
-        let surfaces = tracker.surfaces(&self.monitor.rect, self.size);
+        self.windows_seen = generation;
+        let area = self.monitor.rect;
+        let mut surfaces = tracker.surfaces(&area, self.size);
+        if let Some(hub) = hub {
+            surfaces.extend(hub.surfaces((area.left, area.top, area.right, area.bottom), self.size));
+        }
         if surfaces == self.surfaces {
             return;
         }

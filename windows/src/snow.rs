@@ -4,7 +4,7 @@ use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, CreateWaitableTimerW, INFINITE, SetWaitableTimer, TIMER_ALL_ACCESS,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, CreateWaitableTimerW, INFINITE, SetEvent, SetWaitableTimer, TIMER_ALL_ACCESS,
     WaitForMultipleObjects,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -14,6 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use snowhush::geometry::V2;
+use snowhush::remote::Hub;
 use snowhush::simulation::{ScatterPiece, SnowSimulation, Snowfall};
 
 use crate::desktop::{self, DesktopLayer};
@@ -92,6 +93,19 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
     let mut desktop_logged = String::new();
     let mut stats = Stats::new(started);
     let mut tracker = Tracker::new();
+    // Surfaces from other programs (a browser extension, a Unity script) arrive through a hub on this machine.
+    // Off unless SNOWHUSH_HUB names it, e.g. ws://127.0.0.1:8765.
+    let hub = std::env::var("SNOWHUSH_HUB").ok().and_then(|url| {
+        let event = links.wake;
+        let hub = Hub::start(&url, move || unsafe {
+            let _ = SetEvent(HANDLE(event as _));
+        });
+        match &hub {
+            Some(_) => log!("hub: {url}"),
+            None => log!("hub: {url} ignored, only ws:// addresses on this machine are used"),
+        }
+        hub
+    });
     watch_taskbar(links.wake);
 
     loop {
@@ -256,7 +270,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     continue;
                 }
                 let began = Clock::now();
-                match screen.frame(&gpu, &clock, now, budget, light, time, windows) {
+                match screen.frame(&gpu, &clock, now, budget, light, time, windows, hub.as_ref()) {
                     Ok(drew) => {
                         stats.frame(drew, Clock::now() - began, screen.simulation.sprite_count());
                         released |= screen.simulation.take_snowfall_released();
