@@ -6,8 +6,14 @@ Snowhush connects to it as a client and lets snow settle on the rectangles the o
 ```
 Firefox extension ──┐
                     ├── ws://127.0.0.1:8765 (hub.py) ── Snowhush (Windows)
-Unity script ───────┘
+Unity scripts ──────┘
 ```
+
+- `hub.py`: the hub.
+- `firefox/`: the Firefox extension, snow on the elements of web pages (see `firefox/README.md`).
+- `unity/`: scripts for the Unity Editor's windows and for UI in a built player (see `unity/README.md`).
+- `fake_client.py`: draws invisible windows by hand, to try Snowhush without any of the above, and `--mirror`
+  to check where the others say their rectangles are.
 
 ## Try it
 
@@ -50,16 +56,21 @@ Only `ws://` addresses on this machine (`127.0.0.1`, `localhost`, `[::1]`) are a
 JSON text. Whatever one client sends, the hub passes to all the others.
 
 ```json
-{"type":"surfaces","source":"firefox","rects":[{"id":"nav","x":100,"y":200,"w":600,"h":48,"radius":8}]}
+{"type":"surfaces","source":"firefox","rects":[{"id":"nav","x":100,"y":200,"w":600,"h":48,"radius":8}],"hidden":["footer"]}
 {"type":"clear","source":"firefox"}
 ```
 
 - Coordinates are **physical pixels on the virtual desktop, y pointing down**, like Windows reports its windows.
-  In Firefox that is `window.mozInnerScreenX/Y + element.getBoundingClientRect() * devicePixelRatio`.
+  In Firefox that is `(window.mozInnerScreenX + element.getBoundingClientRect().left) * devicePixelRatio`.
 - A `surfaces` message replaces everything the same `source` sent before; `clear` removes it.
 - `id` keeps the snow with its rectangle from one message to the next.
+- **`hidden`** lists ids that are away for now: the program lost focus, or the page is on another tab. Their snow is
+  put aside as it is, and settles again, in the same place and the same amount, when the id is back in `rects`.
+  An id in neither list lets its snow fall. Snowhush keeps the snow of about 200 away surfaces; snowless ones
+  are not counted.
 - Up to 512 rectangles per source; they need room above them and at least about 80 × 16 DIPs to catch snow.
-- When the hub goes away, its snow drops; Snowhush reconnects by itself.
+- When the hub goes away, its snow drops; Snowhush reconnects by itself. When a client goes away, the hub clears its
+  sources after 3 seconds (`--grace`), unless it is sending them again by then.
 
 Snowhush sends `{"type":"hello","role":"snowhush"}` when it connects.
 

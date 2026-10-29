@@ -567,7 +567,11 @@ impl SnowSimulation {
                 self.layers.push(ledge);
                 self.ids.push(id);
             } else if elsewhere.contains(&id) {
-                self.dormant.insert(id, ledge);
+                // A ledge without snow has nothing to keep: it starts out the same when its window comes back, and
+                // the store of waiting ledges is small, so the empty ones of a page's many elements stay out of it.
+                if ledge.top > 0.05 {
+                    self.dormant.insert(id, ledge);
+                }
             } else if !parked.contains(&id) {
                 let velocity = ledge.track_velocity + ledge.offset_velocity;
                 self.air.shed(&mut ledge, 1.0, velocity);

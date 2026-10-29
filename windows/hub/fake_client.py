@@ -21,6 +21,9 @@ Two ways to make the window real to Snowhush:
   --show           Makes the windows visible (a blue box), to see where they are and tell "Snowhush ignores it"
                    from "Snowhush doesn't work at all".
   --demo           No window: one bar that moves up and down for 20 seconds, sent to the hub.
+  --mirror         Draws a blue outline where the other programs (the Firefox extension, Unity) say their rectangles are,
+                   to check that their coordinates land on the right pixels. The outlines are click-through windows, which
+                   Snowhush ignores, so they add no snow of their own.
 
 Coordinates are physical pixels of the virtual desktop, y pointing down (see README.md).
 In the tray menu of Snowhush, "Snow on Windows" must be on and "Behind Windows" off.
@@ -66,7 +69,8 @@ class Hub:
         for _ in range(2):
             try:
                 if self.socket is None:
-                    self.socket = connect(self.url, open_timeout=2)
+                    # Entered by hand: newer versions of websockets want connect() used like this, older ones return the connection.
+                    self.socket = connect(self.url, open_timeout=2).__enter__()
                 self.socket.send(text)
                 return True
             except Exception:
@@ -93,10 +97,13 @@ class FakeWindows:
     WS_EX_NOREDIRECTIONBITMAP = 0x00200000  # no surface to draw on: shows nothing
     SWP_NOACTIVATE = 0x0010
 
-    def __init__(self, show):
+    WS_EX_TRANSPARENT = 0x00000020  # click-through by style: Snowhush leaves such windows out
+
+    def __init__(self, show, outline=False):
         from ctypes import wintypes
 
         self.show = show
+        self.outline = outline
         self.windows = []  # (handle, x, y, w, h)
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -133,6 +140,7 @@ class FakeWindows:
             wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
         ]  # fmt: skip
         user32.DestroyWindow.argtypes = [wintypes.HWND]
+        gdi32.CombineRgn.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.c_int]
         gdi32.CreateRectRgn.restype = wintypes.HANDLE
         gdi32.CreateRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
         gdi32.CreateSolidBrush.restype = wintypes.HANDLE
@@ -165,6 +173,8 @@ class FakeWindows:
 
     def create(self, x, y, w, h):
         style = self.WS_EX_TOPMOST | self.WS_EX_TOOLWINDOW | self.WS_EX_NOACTIVATE
+        if self.outline:
+            style |= self.WS_EX_TRANSPARENT
         if not self.show:
             style |= self.WS_EX_NOREDIRECTIONBITMAP
         handle = self.user32.CreateWindowExW(
@@ -172,7 +182,13 @@ class FakeWindows:
         )
         if not handle:
             raise ctypes.WinError(ctypes.get_last_error())
-        if not self.show:
+        if self.outline:
+            # Only a 3 px frame is part of the window.
+            frame = self.gdi32.CreateRectRgn(0, 0, w, h)
+            inside = self.gdi32.CreateRectRgn(3, 3, max(3, w - 3), max(3, h - 3))
+            self.gdi32.CombineRgn(frame, frame, inside, 4)  # RGN_DIFF
+            self.user32.SetWindowRgn(handle, frame, True)
+        elif not self.show:
             # Only a strip along the top is part of the window: the rest of the rectangle is click-through, not part of it.
             self.user32.SetWindowRgn(handle, self.gdi32.CreateRectRgn(0, 0, w, min(STRIP, h)), True)
         return (handle, x, y, w, h)
@@ -328,6 +344,78 @@ def run_window(arguments):
     return 0
 
 
+def run_mirror(arguments):
+    """Outlines of the rectangles the other programs send to the hub, as they would land on the screen."""
+    import queue
+    import threading
+    import tkinter as tk
+
+    from websockets.sync.client import connect
+
+    if sys.platform != "win32":
+        print("The mirror needs Windows: it draws on the desktop Snowhush runs on.")
+        return 1
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        ctypes.windll.user32.SetProcessDPIAware()
+    fakes = FakeWindows(show=True, outline=True)
+    incoming = queue.Queue()
+    stop = threading.Event()
+
+    def listen():
+        while not stop.is_set():
+            try:
+                with connect(arguments.url, open_timeout=2) as socket:
+                    incoming.put(("status", f"listening at {arguments.url}"))
+                    for text in socket:
+                        incoming.put(("message", text))
+            except Exception:
+                incoming.put(("status", f"hub not reachable at {arguments.url}, trying again"))
+                stop.wait(1.0)
+
+    threading.Thread(target=listen, daemon=True).start()
+    sources = {}
+    root = tk.Tk()
+    root.title("Snowhush mirror")
+    root.attributes("-topmost", True)
+    status = tk.StringVar(value="starting")
+    tk.Label(root, textvariable=status, padx=12, pady=8).pack()
+    tk.Button(root, text="Quit", command=root.destroy, width=9).pack(pady=(0, 8))
+
+    def poll():
+        changed = False
+        while True:
+            try:
+                kind, value = incoming.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "status":
+                status.set(value)
+                continue
+            try:
+                data = json.loads(value)
+                source = data["source"]
+                if data["type"] == "surfaces":
+                    sources[source] = [(r["x"], r["y"], r["w"], r["h"]) for r in data.get("rects", [])]
+                    changed = True
+                elif data["type"] == "clear":
+                    sources.pop(source, None)
+                    changed = True
+            except (ValueError, KeyError, TypeError):
+                pass  # "hello" and the like
+        if changed:
+            fakes.sync([rect for rects in sources.values() for rect in rects if rect[2] >= 1 and rect[3] >= 1])
+            status.set(f"{sum(len(r) for r in sources.values())} rectangle(s) from {len(sources)} source(s)")
+        root.after(30, poll)
+
+    root.after(30, poll)
+    root.mainloop()
+    stop.set()
+    fakes.sync([])
+    return 0
+
+
 def run_demo(arguments):
     """One bar moving up and down for a while, without any window."""
     hub = Hub(arguments.url)
@@ -350,6 +438,9 @@ if __name__ == "__main__":
     parser.add_argument("--source", default="fake")
     parser.add_argument("--blur", type=int, default=8, help="how much quality the picture loses: 1 none, 8 default")
     parser.add_argument("--demo", action="store_true", help="no window, a moving bar sent to the hub")
+    parser.add_argument("--mirror", action="store_true", help="outline where other programs say their rectangles are")
     parser.add_argument("--hold", type=float, default=20, help="seconds for --demo")
     arguments = parser.parse_args()
+    if arguments.mirror:
+        sys.exit(run_mirror(arguments))
     sys.exit(run_demo(arguments) if arguments.demo else run_window(arguments))

@@ -5,14 +5,17 @@
 //! Messages are JSON text. Snowhush sends `{"type":"hello","role":"snowhush"}` once connected, and listens for
 //!
 //! ```text
-//! {"type":"surfaces","source":"firefox","rects":[{"id":"nav","x":100,"y":200,"w":600,"h":48,"radius":8}]}
+//! {"type":"surfaces","source":"firefox","rects":[{"id":"nav","x":100,"y":200,"w":600,"h":48,"radius":8}],"hidden":["footer"]}
 //! {"type":"clear","source":"firefox"}
 //! ```
 //!
 //! Coordinates are physical pixels on the virtual desktop, y pointing down, as Windows reports its own windows.
-//! A `surfaces` message replaces everything its `source` sent before. Anything else is ignored.
+//! A `surfaces` message replaces everything its `source` sent before. `hidden` lists ids that are away for now, as
+//! when the program lost focus or the page is on another tab: their snow is put aside as it is, and settles again, in
+//! the same place and the same amount, when the id comes back in `rects`. `clear` and ids in neither list let the snow
+//! fall. Anything else is ignored.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,6 +31,8 @@ use crate::simulation::{WindowId, WindowSurface};
 
 /// More than this from one source is a mistake or abuse; the rest is dropped.
 const MAX_RECTS: usize = 512;
+/// Ids kept away for one source; a few thousand elements of old pages is as many as anyone wants snow back on.
+const MAX_HIDDEN: usize = 2048;
 /// A message larger than this closes the connection.
 const MAX_MESSAGE: usize = 1 << 20;
 /// Smallest rectangle the snow settles on, in DIPs.
@@ -48,7 +53,7 @@ pub struct RemoteRect {
 /// What came in on one message.
 #[derive(Debug, PartialEq)]
 pub enum Update {
-    Surfaces { source: String, rects: Vec<RemoteRect> },
+    Surfaces { source: String, rects: Vec<RemoteRect>, hidden: Vec<WindowId> },
     Clear { source: String },
 }
 
@@ -82,7 +87,21 @@ pub fn parse(text: &str) -> Option<Update> {
                 })
                 .take(MAX_RECTS)
                 .collect();
-            Some(Update::Surfaces { source, rects })
+            let hidden = message
+                .get("hidden")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| match id {
+                            Value::String(name) => Some(surface_id(&source, name)),
+                            Value::Number(number) => Some(surface_id(&source, &number.to_string())),
+                            _ => None,
+                        })
+                        .take(MAX_HIDDEN)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(Update::Surfaces { source, rects, hidden })
         }
         _ => None,
     }
@@ -111,10 +130,17 @@ pub fn is_loopback(url: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
+/// What one source reported last.
+#[derive(Default)]
+struct Source {
+    rects: Vec<RemoteRect>,
+    hidden: HashSet<WindowId>,
+}
+
 struct Shared {
     generation: AtomicU64,
     stop: AtomicBool,
-    sources: Mutex<HashMap<String, Vec<RemoteRect>>>,
+    sources: Mutex<HashMap<String, Source>>,
 }
 
 /// The connection to the hub, kept up on its own thread.
@@ -140,11 +166,17 @@ impl Hub {
         self.shared.generation.load(Ordering::Acquire)
     }
 
+    /// Whether this id was reported away for now rather than gone: its snow waits instead of falling.
+    pub fn is_hidden(&self, id: WindowId) -> bool {
+        let sources = self.shared.sources.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        sources.values().any(|source| source.hidden.contains(&id) && !source.rects.iter().any(|rect| rect.id == id))
+    }
+
     /// The rectangles on one display, in its overlay coordinates.
     /// `area` is the display's work area in physical pixels as (left, top, right, bottom), `size` the overlay's size in DIPs.
     pub fn surfaces(&self, area: (i32, i32, i32, i32), size: (u32, u32)) -> Vec<WindowSurface> {
         let sources = self.shared.sources.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut all: Vec<&RemoteRect> = sources.values().flatten().collect();
+        let mut all: Vec<&RemoteRect> = sources.values().flat_map(|source| &source.rects).collect();
         all.sort_by_key(|rect| rect.id);
         all.into_iter().filter_map(|rect| surface(rect, area, size)).collect()
     }
@@ -214,11 +246,11 @@ fn listen(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, shared: &Shared, wa
                     {
                         let mut sources = shared.sources.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         match update {
-                            Update::Surfaces { source, rects } => {
-                                if rects.is_empty() {
+                            Update::Surfaces { source, rects, hidden } => {
+                                if rects.is_empty() && hidden.is_empty() {
                                     sources.remove(&source);
                                 } else {
-                                    sources.insert(source, rects);
+                                    sources.insert(source, Source { rects, hidden: hidden.into_iter().collect() });
                                 }
                             }
                             Update::Clear { source } => {
@@ -268,7 +300,8 @@ mod tests {
     #[test]
     fn parses_surfaces() {
         let text = r#"{"type":"surfaces","source":"firefox","rects":[{"id":"nav","x":100,"y":200,"w":600,"h":48,"radius":8},{"id":7,"x":0,"y":0,"w":10,"h":10}]}"#;
-        let Some(Update::Surfaces { source, rects }) = parse(text) else { panic!("not parsed") };
+        let Some(Update::Surfaces { source, rects, hidden }) = parse(text) else { panic!("not parsed") };
+        assert!(hidden.is_empty());
         assert_eq!(source, "firefox");
         assert_eq!(rects.len(), 2);
         assert_eq!((rects[0].x, rects[0].y, rects[0].width, rects[0].height, rects[0].radius), (100.0, 200.0, 600.0, 48.0, 8.0));
@@ -346,6 +379,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_ids_that_are_away() {
+        let text = r#"{"type":"surfaces","source":"firefox","rects":[],"hidden":["a",7,{"bad":1},"b"]}"#;
+        let Some(Update::Surfaces { rects, hidden, .. }) = parse(text) else { panic!("not parsed") };
+        assert!(rects.is_empty());
+        assert_eq!(hidden, vec![surface_id("firefox", "a"), surface_id("firefox", "7"), surface_id("firefox", "b")]);
+        // Ids away are the same ones that come back in rects.
+        let back = r#"{"type":"surfaces","source":"firefox","rects":[{"id":"a","x":0,"y":0,"w":100,"h":50}]}"#;
+        let Some(Update::Surfaces { rects, .. }) = parse(back) else { panic!("not parsed") };
+        assert_eq!(rects[0].id, hidden[0]);
+    }
+
+    #[test]
+    fn caps_the_ids_that_are_away() {
+        let ids: Vec<String> = (0..MAX_HIDDEN + 50).map(|n| format!(r#""{n}""#)).collect();
+        let text = format!(r#"{{"type":"surfaces","source":"s","rects":[],"hidden":[{}]}}"#, ids.join(","));
+        let Some(Update::Surfaces { hidden, .. }) = parse(&text) else { panic!("not parsed") };
+        assert_eq!(hidden.len(), MAX_HIDDEN);
+    }
+
+    #[test]
     fn talks_to_a_hub() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let url = format!("ws://{}", listener.local_addr().expect("address"));
@@ -371,11 +424,32 @@ mod tests {
         wait_for(|| hub.generation() == 2);
         assert!(hub.surfaces(AREA, SIZE).is_empty());
 
-        // A hub that goes away takes its rectangles with it.
+        // Away for now: nothing to settle on, but the id is known to be coming back.
+        let id = surface_id("firefox", "nav");
         server.send(Message::text(message)).expect("send");
         wait_for(|| hub.generation() == 3);
-        drop(server);
+        assert!(!hub.is_hidden(id));
+        server.send(Message::text(r#"{"type":"surfaces","source":"firefox","rects":[],"hidden":["nav"]}"#)).expect("send");
         wait_for(|| hub.generation() == 4);
+        assert!(hub.surfaces(AREA, SIZE).is_empty());
+        assert!(hub.is_hidden(id));
+        server.send(Message::text(message)).expect("send");
+        wait_for(|| hub.generation() == 5);
+        assert_eq!(hub.surfaces(AREA, SIZE).len(), 1);
+        assert!(!hub.is_hidden(id), "back on its window");
+
+        // Cleared means gone, even if it was away.
+        server.send(Message::text(r#"{"type":"surfaces","source":"firefox","rects":[],"hidden":["nav"]}"#)).expect("send");
+        wait_for(|| hub.generation() == 6);
+        server.send(Message::text(r#"{"type":"clear","source":"firefox"}"#)).expect("send");
+        wait_for(|| hub.generation() == 7);
+        assert!(!hub.is_hidden(id));
+
+        // A hub that goes away takes its rectangles with it, and what was away too.
+        server.send(Message::text(message)).expect("send");
+        wait_for(|| hub.generation() == 8);
+        drop(server);
+        wait_for(|| hub.generation() == 9);
         assert!(hub.surfaces(AREA, SIZE).is_empty());
     }
 

@@ -145,6 +145,37 @@ fn snow_settles_on_a_window_and_drops_when_it_closes() {
 }
 
 #[test]
+fn snow_waits_for_a_surface_that_is_away_and_comes_back_as_it_was() {
+    let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    simulation.thaws = false;
+    let none = HashSet::new();
+    simulation.update_windows(&[surface(-9, 300.0, 600.0, 500.0)], 0.2, &none, &none, false);
+    run(&mut simulation, 90.0, AWAY);
+    simulation.set_snowfall(Snowfall::Off);
+    // Flakes already in the air take most of 40 seconds to land; only then does what is left in the air say anything.
+    run(&mut simulation, 45.0, AWAY);
+    let before = piles(&simulation).iter().find(|(origin, _)| origin.y > 500.0).map(|p| p.1).unwrap();
+    assert!(before > 200.0, "ledge area {before}");
+
+    // Its program lost focus: the snow is put aside, none of it falls and none is left on screen.
+    let ground = piles(&simulation)[0].1;
+    let away: HashSet<isize> = [-9].into();
+    simulation.update_windows(&[], 0.2, &none, &away, false);
+    simulation.step(DT, AWAY);
+    assert!(simulation.sprite_count() < 20, "the surface's snow fell");
+    run(&mut simulation, 30.0, AWAY);
+    assert_eq!(piles(&simulation).len(), 1, "the snow stayed on screen");
+    assert!(piles(&simulation)[0].1 < ground * 1.02, "snow landed on the ground");
+
+    // Back, a little to the side and lower: the same amount of snow, on it.
+    simulation.update_windows(&[surface(-9, 340.0, 560.0, 500.0)], 0.2, &none, &none, false);
+    run(&mut simulation, 1.0, AWAY);
+    let after = piles(&simulation).iter().find(|(origin, _)| (origin.y - 560.0).abs() < 30.0).map(|p| p.1).expect("snow on the returned surface");
+    assert!((after - before).abs() < before * 0.05, "before {before}, after {after}");
+    assert_finite(&simulation);
+}
+
+#[test]
 fn dragged_window_sheds_its_snow() {
     let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
     simulation.thaws = false;
