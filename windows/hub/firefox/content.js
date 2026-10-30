@@ -233,13 +233,81 @@
     for (const rect of rects) box(overlay, rect, "#1a9a3a", false, null);
   }
 
+  // Rectangles you draw (the button of the extension): kept for the page, where you drew them in the document.
+  const STORE = "drawn:" + location.hostname + location.pathname;
+  let drawn = [];
+  api.storage.local.get(STORE).then((got) => {
+    drawn = Array.isArray(got[STORE]) ? got[STORE] : [];
+    schedule();
+  }, () => {});
+  const saveDrawn = () => api.storage.local.set({ [STORE]: drawn.slice(-40) }).catch(() => {});
+
+  function drawnRects() {
+    const out = [];
+    for (const d of drawn) {
+      const x = d.x - window.scrollX;
+      const y = d.y - window.scrollY;
+      if (y < 1 || y > window.innerHeight - 4 || x + d.w <= 0 || x >= window.innerWidth) continue;
+      out.push({ id: d.id, x, y, w: d.w, h: d.h, radius: 0 });
+    }
+    return out;
+  }
+
+  function startDrawing() {
+    if (document.getElementById("snowhush-draw-layer")) return;
+    const layer = document.createElement("div");
+    layer.id = "snowhush-draw-layer";
+    layer.style.cssText = "position:fixed;inset:0;z-index:2147483647;cursor:crosshair;background:rgba(30,60,120,.15);";
+    const hint = document.createElement("div");
+    hint.textContent = "Drag a rectangle where snow should settle (its top edge). Esc cancels.";
+    hint.style.cssText = "position:absolute;left:50%;top:12px;transform:translateX(-50%);font:14px system-ui;color:#fff;background:#123c;padding:6px 12px;border-radius:8px;";
+    const rubber = document.createElement("div");
+    layer.append(hint, rubber);
+    root.appendChild(layer);
+    let from = null;
+    const finish = () => {
+      layer.remove();
+      removeEventListener("keydown", onKey, true);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") finish();
+    };
+    addEventListener("keydown", onKey, true);
+    const area = (event) => ({
+      x: Math.min(from.x, event.clientX),
+      y: Math.min(from.y, event.clientY),
+      w: Math.abs(event.clientX - from.x),
+      h: Math.abs(event.clientY - from.y),
+    });
+    layer.addEventListener("pointerdown", (event) => {
+      from = { x: event.clientX, y: event.clientY };
+      layer.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    layer.addEventListener("pointermove", (event) => {
+      if (!from) return;
+      const r = area(event);
+      rubber.style.cssText = "position:absolute;border:2px solid #1a9a3a;background:#1a9a3a33;left:" + r.x + "px;top:" + r.y + "px;width:" + r.w + "px;height:" + r.h + "px;";
+    });
+    layer.addEventListener("pointerup", (event) => {
+      if (!from) return;
+      const r = area(event);
+      finish();
+      if (r.w >= 40 && r.h >= 12) {
+        drawn.push({ id: "d" + hash(location.hostname + location.pathname + "|" + Date.now() + Math.random()), x: r.x + window.scrollX, y: r.y + window.scrollY, w: r.w, h: r.h });
+        saveDrawn();
+        run(true);
+      }
+    });
+  }
+
   function run(force) {
     timer = 0;
     if (document.hidden) return;
     const started = performance.now();
     const debug = root.hasAttribute("data-snowhush-debug");
     rejected = [];
-    rects = collect(debug ? rejected : null);
+    rects = collect(debug ? rejected : null).concat(drawnRects());
     cost = performance.now() - started;
     lastRun = performance.now();
     send(force === true);
@@ -283,6 +351,12 @@
   }, 100);
   api.runtime.onMessage.addListener((message) => {
     if (message && message.type === "refresh") run(true);
+    if (message && message.type === "draw") startDrawing();
+    if (message && message.type === "undraw") {
+      drawn = [];
+      saveDrawn();
+      run(true);
+    }
   });
 
   schedule();

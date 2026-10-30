@@ -29,6 +29,13 @@ For good, the folder has to be packed and signed by Mozilla (or loaded in Firefo
   (host and path) and their place in the document, not by the tab, so when the same page is opened again, in any tab,
   its snow is back where it was. It is kept while Snowhush runs, for up to about a thousand elements.
 
+## Draw a rectangle yourself
+
+Where the automatic detection finds nothing (a page that draws everything on a canvas, say), press the Snowhush button
+in the toolbar and pick **Draw a snow rectangle**, then drag on the page: snow settles on the top edge of what you drew.
+The rectangles are kept for that page (host and path) and stay where you drew them in the document when it scrolls.
+**Remove drawn rectangles of this page** clears them. (Needs the `storage` permission, for that.)
+
 ## The test page
 
 `http://127.0.0.1:8765/test` (also `/test2` and `/test3`, as other pages) has every kind of element on it, each marked

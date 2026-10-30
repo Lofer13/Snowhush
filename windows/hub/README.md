@@ -85,3 +85,9 @@ Snowhush sends `{"type":"hello","role":"snowhush"}` when it connects.
 
 - Windows in front of the browser don't hide the snow on page elements: report rectangles only while the page is visible and focused.
 - No setting in the tray menu; the hub is switched on by the environment variable.
+
+## Pages that go away, and web origins
+
+A page or browser whose connection drops (sources named `tm:...` or `firefox`) isn't cleared: its surfaces become
+`hidden`, so the snow waits for them. `python hub.py --allow-web-origins` also accepts clients with the Origin of an
+ordinary web page, which the Tampermonkey script needs (see `tampermonkey/README.md`); leave it off otherwise.

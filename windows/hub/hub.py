@@ -39,6 +39,9 @@ owners = {}
 waiting = {}
 roles = {}  # connection -> what it said it is in its "hello": "snowhush" for the program itself
 grace = 3.0
+allow_web = False  # accept the Origin of ordinary web pages too (a Tampermonkey script has the one of its page)
+MAX_SOURCES = 64
+KEEPING = ("tm:", "firefox")  # sources whose snow is kept when they go away
 PAGES = {"/", "/test", "/test2", "/test3"}
 
 
@@ -74,8 +77,15 @@ def track(connection, message):
     if not isinstance(source, str):
         return
     if kind == "surfaces":
+        latest.pop(source, None)  # to the end of the order
         latest[source] = message
         owners[source] = connection
+        while len(latest) > MAX_SOURCES:
+            old = next((name for name in latest if name not in owners), None)
+            if old is None:
+                break
+            del latest[old]
+            broadcast(clients, json.dumps({"type": "clear", "source": old}))
     elif kind == "clear":
         latest.pop(source, None)
         owners.pop(source, None)
@@ -91,8 +101,26 @@ def forget(connection):
     """The connection went away: its sources are cleared after the grace period, unless sent again by then."""
     for source in [source for source, owner in owners.items() if owner is connection]:
         del owners[source]
+        if not rects_of(source):
+            continue  # it only had hidden surfaces (a closed page): nothing stale on screen, and the snow is kept for it
+        if source.startswith(KEEPING):
+            # A page or browser that is gone: its surfaces become hidden, so their snow waits for the same ones to return.
+            data = json.loads(latest[source])
+            ids = [r["id"] for r in data.get("rects", []) if isinstance(r, dict) and "id" in r]
+            data["hidden"] = (data.get("hidden", []) + ids)[-2000:]
+            data["rects"] = []
+            latest[source] = json.dumps(data)
+            broadcast(clients, latest[source])
+            continue
         loop = asyncio.get_running_loop()
         waiting[source] = loop.call_later(grace, clear, source)
+
+
+def rects_of(source):
+    try:
+        return json.loads(latest[source]).get("rects", [])
+    except (KeyError, ValueError, AttributeError):
+        return []
 
 
 def clear(source):
@@ -166,7 +194,7 @@ async def main(host, port):
         if request.headers.get("Upgrade", "").lower() != "websocket":
             return answer(connection, request)
         origin = request.headers.get("Origin")
-        if origin and not origin.startswith(("moz-extension://", "chrome-extension://")):
+        if origin and not allow_web and not origin.startswith(("moz-extension://", "chrome-extension://")):
             logging.warning("refused origin %s", origin)
             return connection.respond(403, "Forbidden\n")
         return None
@@ -181,8 +209,12 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--grace", type=float, default=3.0, help="seconds before the sources of a lost client are cleared")
+    parser.add_argument("--allow-web-origins", action="store_true",
+                        help="also accept WebSocket clients that say they are a web page (for the Tampermonkey script); "
+                             "any page you have open could then reach the hub, so leave it off unless you use the script")
     arguments = parser.parse_args()
     grace = arguments.grace
+    allow_web = arguments.allow_web_origins
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         asyncio.run(main(arguments.host, arguments.port))

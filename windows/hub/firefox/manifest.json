@@ -20,5 +20,9 @@
       "run_at": "document_idle"
     }
   ],
-  "permissions": []
+  "permissions": ["storage"],
+  "browser_action": {
+    "default_title": "Snowhush",
+    "default_popup": "popup.html"
+  }
 }
