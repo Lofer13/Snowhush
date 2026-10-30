@@ -27,6 +27,7 @@ import logging
 import pathlib
 
 from websockets.asyncio.server import broadcast, serve
+from websockets.exceptions import InvalidStatus
 
 MAX_MESSAGE = 1 << 20
 
@@ -41,6 +42,23 @@ grace = 3.0
 PAGES = {"/", "/test", "/test2", "/test3"}
 
 
+class QuietHttp(logging.Filter):
+    """websockets reports every plain page or status it serves as a failed handshake, with a traceback."""
+
+    def filter(self, record):
+        if record.exc_info and isinstance(record.exc_info[1], InvalidStatus):
+            return False
+        return not record.getMessage().startswith("connection rejected (")
+
+
+def who(connection):
+    """What is on the other end, as far as it says: the Firefox extension has an extension origin."""
+    origin = connection.request.headers.get("Origin") if connection.request else None
+    if origin and origin.startswith("moz-extension://"):
+        return "the Firefox extension"
+    return origin or "a program"
+
+
 def track(connection, message):
     """Notes what a message from this connection says about its source."""
     try:
@@ -51,6 +69,7 @@ def track(connection, message):
         return
     if kind == "hello":
         roles[connection] = str(data.get("role", ""))[:32]
+        logging.info("hello from %s", "Snowhush" if roles[connection] == "snowhush" else roles[connection] or "someone")
         return
     if not isinstance(source, str):
         return
@@ -126,7 +145,7 @@ async def handle(connection):
     clients.add(connection)
     for message in list(latest.values()):
         await connection.send(message)
-    logging.info("connected: %s (%d clients)", connection.remote_address, len(clients))
+    logging.info("connected: %s, %s (%d clients)", who(connection), connection.remote_address, len(clients))
     try:
         async for message in connection:
             track(connection, message)
@@ -140,6 +159,7 @@ async def handle(connection):
 
 
 async def main(host, port):
+    logging.getLogger("websockets.server").addFilter(QuietHttp())
     # Browsers let any web page open a WebSocket to localhost, so a page could talk to this hub.
     # Only an extension or a program is welcome: no Origin header, or one from an extension.
     def allowed(connection, request):
