@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="pl" data-snowhush-debug>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snowhush test</title>
+<style>
+  :root { font: 15px/1.4 system-ui, sans-serif; color: #1d2330; }
+  body { margin: 0; padding: 0 340px 400px 24px; background: #f3f5f9; } /* room on the right for the panel */
+  h2 { margin: 36px 0 10px; font-size: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .box { width: 230px; min-height: 70px; padding: 10px; box-sizing: border-box; border-radius: 10px; font-size: 13px; }
+  .box b { display: block; margin-bottom: 4px; }
+  .yes b::before { content: "✔ śnieg powinien osiąść · "; color: #1a7f37; }
+  .no b::before { content: "✘ bez śniegu · "; color: #b42318; }
+  .card { background: #fff; border-radius: 16px; box-shadow: 0 1px 4px #0002; }
+  .border { border: 2px solid #4a6fa5; background: transparent; }
+  .shadow { box-shadow: 0 6px 14px #0004; background: transparent; }
+  .gradient { background: linear-gradient(135deg, #cfe8ff, #ffe0f0); }
+  .plain { background: transparent; }
+  .faint { background: rgba(0, 0, 0, 0.1); }
+  .ghost { background: #fff; opacity: 0.12; }
+  .tiny { width: 40px; min-height: 30px; padding: 0; background: #223; }
+  .sticky { position: sticky; top: 0; z-index: 5; background: #1d2330; color: #fff; padding: 14px 24px; margin: 0 -340px 0 -24px; }
+  #panel { position: fixed; right: 12px; top: 64px; z-index: 10; width: 300px; background: #fff; border-radius: 12px; padding: 12px 14px; box-shadow: 0 2px 10px #0004; font-size: 13px; }
+  #panel div { margin: 3px 0; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: #aaa; }
+  .on { background: #1a9a3a; } .off { background: #d33; } .wait { background: #e0a000; }
+  #cover { display: none; position: fixed; left: 24px; top: 190px; width: 760px; height: 150px; background: #d33c; color: #fff; z-index: 6; padding: 12px; box-sizing: border-box; }
+  #mover { width: 200px; height: 50px; background: #5b8def; border-radius: 8px; animation: slide 4s ease-in-out infinite alternate; }
+  @keyframes slide { to { transform: translateX(300px); } }
+  .list .box { width: 100%; max-width: 640px; min-height: 40px; }
+  button, input, textarea, select { font: inherit; }
+  small { color: #667; }
+</style>
+</head>
+<body>
+
+<div class="sticky"><b>Snowhush: strona testowa</b> · <span id="where"></span></div>
+
+<div id="panel">
+  <b>Stan</b>
+  <div><span class="dot wait" id="d-hub"></span><span id="t-hub">hub…</span></div>
+  <div><span class="dot wait" id="d-snow"></span><span id="t-snow">Snowhush…</span></div>
+  <div><span class="dot wait" id="d-ext"></span><span id="t-ext">rozszerzenie Firefoksa…</span></div>
+  <div><span class="dot wait" id="d-count"></span><span id="t-count">elementy…</span></div>
+  <div><span class="dot wait" id="d-fx"></span><span id="t-fx">w hubie od Firefoksa…</span></div>
+  <hr>
+  <label><input type="checkbox" id="debug" checked> pokaż nakładkę: <span style="color:#1a9a3a">zielone</span> = wysłane, <span style="color:#d33">czerwone</span> = odrzucone (z powodem)</label>
+  <p><small>Sprawdź: śnieg na zielonych elementach; zamknij kartę albo przejdź do innej strony i wróć; przewiń; zasłoń karty.</small></p>
+</div>
+
+<h2>1. Elementy, na których śnieg powinien osiąść</h2>
+<div class="row">
+  <div class="box card yes"><b>karta z tłem</b>zaokrąglona (16 px)</div>
+  <div class="box border yes"><b>sama ramka</b>bez tła</div>
+  <div class="box shadow yes"><b>sam cień</b>bez tła i bez ramki</div>
+  <div class="box gradient yes"><b>gradient</b>tło-obrazek</div>
+  <button class="box card yes" style="border:0;text-align:left"><b>przycisk</b>element &lt;button&gt;</button>
+  <input class="box yes" style="width:230px;min-height:0;height:44px;border:1px solid #99a" value="pole tekstowe (input)">
+  <textarea class="box yes" style="width:230px;height:70px;border:1px solid #99a">textarea</textarea>
+  <select class="box yes" style="width:230px;min-height:0;height:44px"><option>select</option></select>
+  <img class="yes" alt="obrazek" width="230" height="70" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='230' height='70'><rect width='230' height='70' rx='8' fill='%23ffd9a8'/><text x='12' y='40' font-size='14' fill='%23333'>obrazek (img)</text></svg>">
+  <canvas class="yes" width="230" height="70" id="cv"></canvas>
+  <iframe class="yes" width="230" height="70" srcdoc="<p style='font:13px sans-serif'>iframe: ramka dostaje śnieg, jej wnętrze nie</p>"></iframe>
+</div>
+
+<h2>2. Elementy, na których śniegu nie powinno być</h2>
+<div class="row">
+  <div class="box plain no"><b>sam tekst</b>bez tła, ramki i cienia, nie ma co widzieć</div>
+  <div class="box faint no"><b>prawie przezroczyste tło</b>10% czerni</div>
+  <div class="box ghost no"><b>przezroczysty</b>opacity 12%</div>
+  <div class="box tiny no"></div>
+  <div class="box card no" style="position:relative"><b>dziecko u góry rodzica</b>
+    <div class="card" style="position:absolute;left:0;top:0;width:100%;height:30px;background:#dfe;"></div>
+  </div>
+</div>
+
+<h2>3. Zasłanianie</h2>
+<p><button id="toggle-cover">Zasłoń karty czerwonym banerem</button> <small>karty pod banerem tracą śnieg (jest odkładany) i dostają go z powrotem po zdjęciu banera</small></p>
+<div class="row" id="covered">
+  <div class="box card yes"><b>karta A</b>pod banerem</div>
+  <div class="box card yes"><b>karta B</b>pod banerem</div>
+  <div class="box card yes"><b>karta C</b>pod banerem</div>
+</div>
+<div id="cover"><b>baner</b> (position: fixed). Dostaje śnieg sam, ale to, co pod nim, nie.</div>
+
+<h2>4. Ruch</h2>
+<div class="row">
+  <div id="mover" class="yes"></div>
+  <div class="box card yes"><b>animowany pasek obok</b>śnieg powinien jechać razem z nim</div>
+</div>
+<p><button id="add">Dodaj kartę</button> <small>nowy element dostaje śnieg dopiero po chwili</small></p>
+<div class="row" id="added"></div>
+
+<h2>5. Dwie strony: wróć i śnieg jest ten sam</h2>
+<p>
+  <a href="/test">strona 1</a> · <a href="/test2">strona 2</a> · <a href="/test3">strona 3</a><br>
+  <small>Daj śniegowi chwilę, przejdź na inną stronę (albo zamknij kartę), wróć: ten sam śnieg, w tych samych miejscach.
+  Id elementu zależy od adresu strony (host i ścieżka) i miejsca w dokumencie, a nie od karty.</small>
+</p>
+
+<h2>6. Przewijanie</h2>
+<p><small>Przewiń w dół i z powrotem: śnieg elementów, które wyjeżdżają poza ekran, jest odkładany, a wraca z nimi.</small></p>
+<div class="list">
+  <script>
+    for (let i = 1; i <= 24; i++) document.write('<div class="box card yes" style="margin:10px 0"><b>wiersz ' + i + '</b></div>');
+  </script>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const root = document.documentElement;
+  $("where").textContent = location.host + location.pathname;
+  const ctx = $("cv").getContext("2d"); ctx.fillStyle = "#bfe3c8"; ctx.fillRect(0, 0, 230, 70); ctx.fillStyle = "#333"; ctx.fillText("canvas", 12, 40);
+
+  function light(name, state, text) {
+    $("d-" + name).className = "dot " + state;
+    $("t-" + name).textContent = text;
+  }
+  const loadedAt = Date.now();
+  async function poll() {
+    let status = null;
+    try { status = await (await fetch("/status", { cache: "no-store" })).json(); } catch (e) {}
+    if (!status) light("hub", "off", "hub: brak odpowiedzi (python hub.py?)");
+    else light("hub", "on", "hub: działa, klientów: " + status.clients);
+    if (status) {
+      light("snow", status.snowhush ? "on" : "off",
+        status.snowhush ? "Snowhush: połączony z hubem" : "Snowhush: nie połączony (uruchom go z SNOWHUSH_HUB albo hub.txt)");
+    } else light("snow", "wait", "Snowhush: nie wiadomo");
+    const ext = root.getAttribute("data-snowhush");
+    if (ext) light("ext", "on", "rozszerzenie: działa na tej stronie");
+    else light("ext", Date.now() - loadedAt > 2500 ? "off" : "wait", "rozszerzenie: nie widać (zainstalowane? odśwież stronę po instalacji)");
+    const count = root.getAttribute("data-snowhush-count");
+    if (count !== null) light("count", Number(count) > 0 ? "on" : "off", "ta strona wysłała elementów: " + count);
+    else light("count", "wait", "ta strona jeszcze nic nie wysłała");
+    const fx = status && status.sources && status.sources.firefox;
+    if (fx) light("fx", "on", "hub ma od Firefoksa: " + fx.rects + " widocznych, " + fx.hidden + " ukrytych");
+    else light("fx", status ? "off" : "wait", "hub nic nie ma od Firefoksa (rozszerzenie nie połączone z hubem?)");
+  }
+  poll(); setInterval(poll, 1000);
+
+  $("debug").onchange = (e) => e.target.checked ? root.setAttribute("data-snowhush-debug", "") : root.removeAttribute("data-snowhush-debug");
+  $("toggle-cover").onclick = () => { const c = $("cover"); c.style.display = c.style.display === "block" ? "none" : "block"; };
+  let added = 0;
+  $("add").onclick = () => { const d = document.createElement("div"); d.className = "box card yes"; d.innerHTML = "<b>dodana karta " + (++added) + "</b>"; $("added").appendChild(d); };
+</script>
+</body>
+</html>

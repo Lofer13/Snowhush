@@ -12,13 +12,19 @@ recompiling scripts, keeps its snow.
     python hub.py                # ws://127.0.0.1:8765
     python hub.py --port 9000
 
-Then start Snowhush with SNOWHUSH_HUB=ws://127.0.0.1:8765 in its environment.
+Then start Snowhush with SNOWHUSH_HUB=ws://127.0.0.1:8765 in its environment, or put that address in
+%LOCALAPPDATA%\\Snowhush\\hub.txt.
+
+The same port also answers plain HTTP, for trying things out:
+    http://127.0.0.1:8765/test      a page with every kind of element, and who is connected (also /test2, /test3)
+    http://127.0.0.1:8765/status    the same as JSON
 """
 
 import argparse
 import asyncio
 import json
 import logging
+import pathlib
 
 from websockets.asyncio.server import broadcast, serve
 
@@ -30,16 +36,21 @@ latest = {}
 # Which connection last sent each source, and the clears waiting for a source whose sender went away.
 owners = {}
 waiting = {}
+roles = {}  # connection -> what it said it is in its "hello": "snowhush" for the program itself
 grace = 3.0
+PAGES = {"/", "/test", "/test2", "/test3"}
 
 
 def track(connection, message):
     """Notes what a message from this connection says about its source."""
     try:
         data = json.loads(message)
-        source = data["source"]
         kind = data["type"]
-    except (ValueError, KeyError, TypeError):
+        source = data.get("source")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return
+    if kind == "hello":
+        roles[connection] = str(data.get("role", ""))[:32]
         return
     if not isinstance(source, str):
         return
@@ -74,6 +85,43 @@ def clear(source):
     broadcast(clients, json.dumps({"type": "clear", "source": source}))
 
 
+def status():
+    sources = {}
+    for source, message in latest.items():
+        try:
+            data = json.loads(message)
+            sources[source] = {"rects": len(data.get("rects", [])), "hidden": len(data.get("hidden", []))}
+        except ValueError:
+            pass
+    return {
+        "clients": len(clients),
+        "snowhush": "snowhush" in roles.values(),
+        "sources": sources,
+    }
+
+
+def reply(connection, body, content_type):
+    response = connection.respond(200, body)
+    del response.headers["Content-Type"]  # respond() sets one, and setting another would add a second
+    response.headers["Content-Type"] = content_type
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def answer(connection, request):
+    """The plain HTTP side: the test page and the status. Not a WebSocket handshake."""
+    path = request.path.split("?")[0]
+    if path in PAGES:
+        try:
+            body = pathlib.Path(__file__).with_name("test.html").read_text(encoding="utf-8")
+        except OSError:
+            return connection.respond(404, "test.html is not next to hub.py\n")
+        return reply(connection, body, "text/html; charset=utf-8")
+    if path == "/status":
+        return reply(connection, json.dumps(status()), "application/json")
+    return connection.respond(404, "Not found\n")
+
+
 async def handle(connection):
     clients.add(connection)
     for message in list(latest.values()):
@@ -86,6 +134,7 @@ async def handle(connection):
             broadcast([client for client in clients if client is not connection], message)
     finally:
         clients.discard(connection)
+        roles.pop(connection, None)
         forget(connection)
         logging.info("disconnected: %s (%d clients)", connection.remote_address, len(clients))
 
@@ -94,6 +143,8 @@ async def main(host, port):
     # Browsers let any web page open a WebSocket to localhost, so a page could talk to this hub.
     # Only an extension or a program is welcome: no Origin header, or one from an extension.
     def allowed(connection, request):
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            return answer(connection, request)
         origin = request.headers.get("Origin")
         if origin and not origin.startswith(("moz-extension://", "chrome-extension://")):
             logging.warning("refused origin %s", origin)

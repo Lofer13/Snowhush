@@ -581,7 +581,8 @@ impl SnowSimulation {
                 self.parking.push((id, ledge, self.air.clock));
             }
         }
-        if self.dormant.len() > 200
+        // Snow put aside is kept for good, up to what a few dozen pages of elements come to.
+        if self.dormant.len() > 1024
             && let Some(&stale) = self.dormant.keys().next()
         {
             self.dormant.remove(&stale);

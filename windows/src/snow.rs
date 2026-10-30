@@ -69,6 +69,20 @@ pub fn run(commands: Receiver<Command>, links: Links, settings: Settings) {
     }
 }
 
+/// Where the hub is, if anywhere: the environment variable SNOWHUSH_HUB, or else the first line of hub.txt in the
+/// folder of the log (%LOCALAPPDATA%\Snowhush), which a program started from the Start menu can have too.
+fn hub_address() -> Option<String> {
+    if let Ok(url) = std::env::var("SNOWHUSH_HUB")
+        && !url.trim().is_empty()
+    {
+        return Some(url.trim().to_string());
+    }
+    let file = log::path()?.with_file_name("hub.txt");
+    let text = std::fs::read_to_string(file).ok()?;
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
 fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings) -> Result<()> {
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
     let mut gpu = Gpu::new()?;
@@ -94,8 +108,8 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
     let mut stats = Stats::new(started);
     let mut tracker = Tracker::new();
     // Surfaces from other programs (a browser extension, a Unity script) arrive through a hub on this machine.
-    // Off unless SNOWHUSH_HUB names it, e.g. ws://127.0.0.1:8765.
-    let hub = std::env::var("SNOWHUSH_HUB").ok().and_then(|url| {
+    // Off unless SNOWHUSH_HUB or the file hub.txt names it, e.g. ws://127.0.0.1:8765.
+    let hub = hub_address().and_then(|url| {
         let event = links.wake;
         let hub = Hub::start(&url, move || unsafe {
             let _ = SetEvent(HANDLE(event as _));
@@ -106,6 +120,9 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
         }
         hub
     });
+    if hub.is_none() && hub_address().is_none() {
+        log!("hub: off, neither SNOWHUSH_HUB nor hub.txt next to this log names one");
+    }
     watch_taskbar(links.wake);
 
     loop {

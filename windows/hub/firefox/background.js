@@ -1,19 +1,23 @@
 // Snowhush for Firefox, the part that talks to the hub. The pages report the rectangles of their elements; this turns
 // them into physical pixels of the screen and passes on only those of the tab you are looking at in the window you are
-// in. The elements of every other tab, and all of them while you are in another program, are reported as "hidden":
-// Snowhush puts their snow aside as it is, and settles it again in the same place when they come back.
+// in. Every other element it has seen, those of other tabs, of tabs that are closed, scrolled out of view, and all of
+// them while you are in another program, is reported as "hidden": Snowhush puts its snow aside as it is, and settles it
+// again in the same place and amount when the element is back, as the ids are the same for the same page.
 "use strict";
 
 const HUB_URL = "ws://127.0.0.1:8765";
 const SOURCE = "firefox";
-// Snowhush keeps the snow of about 200 away surfaces; a few less leaves room for what is on screen.
-const MAX_HIDDEN = 160;
+// Elements reported as hidden at a time, the ones seen last first: it takes only those that just went away.
+const MAX_HIDDEN = 120;
+// Elements remembered in all.
+const MAX_SAVED = 1500;
 // If the snow lands off from the elements, a pixel or two or by a constant factor, this is where to correct it.
 // python fake_client.py --mirror outlines where the rectangles are said to be.
 const CALIBRATION = { scale: 1, dx: 0, dy: 0 };
 
 const tabs = new Map(); // tabId -> { rects, geom } as the page reported them
 const activeTab = new Map(); // windowId -> the tab on top in it
+const saved = new Map(); // id -> when it was last reported; the order is the order of that
 let focusedWindow = browser.windows.WINDOW_ID_NONE;
 let socket = null;
 let retryTimer = 0;
@@ -25,10 +29,10 @@ function number(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function toScreen(tabId, entry) {
+function toScreen(entry) {
   const k = entry.geom.dpr * CALIBRATION.scale;
   return entry.rects.map((r) => ({
-    id: tabId + ":" + r.id,
+    id: r.id,
     x: (entry.geom.sx + r.x) * k + CALIBRATION.dx,
     y: (entry.geom.sy + r.y) * k + CALIBRATION.dy,
     w: r.w * k,
@@ -37,16 +41,32 @@ function toScreen(tabId, entry) {
   }));
 }
 
+function remember(rects) {
+  const now = Date.now();
+  for (const r of rects) {
+    saved.delete(r.id);
+    saved.set(r.id, now);
+  }
+  while (saved.size > MAX_SAVED) saved.delete(saved.keys().next().value);
+}
+
 function build() {
   const visible = activeTab.get(focusedWindow); // nothing while no Firefox window has the focus
   const rects = [];
-  const hidden = [];
+  const shown = new Set();
   for (const [tabId, entry] of tabs) {
-    const list = toScreen(tabId, entry);
-    if (tabId === visible) rects.push(...list);
-    else for (const r of list) hidden.push(r.id);
+    if (tabId !== visible) continue;
+    for (const r of toScreen(entry)) {
+      rects.push(r);
+      shown.add(r.id);
+    }
   }
-  return { type: "surfaces", source: SOURCE, rects, hidden: hidden.slice(0, MAX_HIDDEN) };
+  const hidden = [];
+  const ids = Array.from(saved.keys());
+  for (let i = ids.length - 1; i >= 0 && hidden.length < MAX_HIDDEN; i--) {
+    if (!shown.has(ids[i])) hidden.push(ids[i]);
+  }
+  return { type: "surfaces", source: SOURCE, rects, hidden };
 }
 
 function flush() {
@@ -104,7 +124,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "state" && Array.isArray(message.rects) && message.geom) {
     const geom = { sx: number(message.geom.sx), sy: number(message.geom.sy), dpr: number(message.geom.dpr) || 1 };
     const rects = message.rects.slice(0, 200).map((r) => ({
-      id: String(r.id).slice(0, 200),
+      id: String(r.id).slice(0, 64),
       x: number(r.x),
       y: number(r.y),
       w: number(r.w),
@@ -112,9 +132,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
       radius: number(r.radius),
     }));
     tabs.set(tabId, { rects, geom });
+    remember(rects);
     update();
   } else if (message.type === "gone") {
-    tabs.delete(tabId); // navigated away or closed: its snow falls
+    tabs.delete(tabId); // navigated away: the elements are hidden, their snow kept for when the page is opened again
     update();
   }
 });
@@ -126,7 +147,7 @@ browser.tabs.onActivated.addListener(({ tabId, windowId }) => {
 });
 
 browser.tabs.onRemoved.addListener((tabId) => {
-  tabs.delete(tabId);
+  tabs.delete(tabId); // closed: same as above
   update();
 });
 

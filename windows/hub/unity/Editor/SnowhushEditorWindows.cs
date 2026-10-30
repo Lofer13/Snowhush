@@ -29,11 +29,6 @@ namespace Snowhush.Editor
         static SnowhushEditorWindows()
         {
             EditorApplication.update += Tick;
-            EditorApplication.focusChanged += hasFocus =>
-            {
-                focused = hasFocus;
-                if (!hasFocus) client.Set(new List<SurfaceRect>(), ids);
-            };
             // Scripts recompile in a moment and this goes away: the snow waits, and is back with the same windows.
             AssemblyReloadEvents.beforeAssemblyReload += () =>
             {
@@ -49,8 +44,21 @@ namespace Snowhush.Editor
 
         static void Tick()
         {
-            if (!focused || EditorApplication.timeSinceStartup < next) return;
+            if (EditorApplication.timeSinceStartup < next) return;
             next = EditorApplication.timeSinceStartup + 0.05;
+            // Asked every time instead of waiting for an event: the ones that say the Editor lost the focus
+            // (EditorApplication.focusChanged) don't exist in every version of Unity.
+            bool active = InternalEditorUtility.isApplicationActive;
+            if (!active)
+            {
+                if (focused)
+                {
+                    focused = false;
+                    client.Set(new List<SurfaceRect>(), ids); // away: the snow waits where it is
+                }
+                return;
+            }
+            focused = true;
             Collect();
             client.Set(rects, none);
         }

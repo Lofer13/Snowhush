@@ -42,12 +42,19 @@ If no snow settles, check that:
 - "Snow on Windows" is on and "Behind Windows" is off in the tray menu: with either the other way round, no surfaces are used.
 - The rectangle has room above it (not touching the top of the display) and is at least about 80 × 16 DIPs.
 
-Start Snowhush with the hub's address in its environment (off otherwise):
+Tell Snowhush where the hub is (off otherwise), by either of:
 
 ```
 set SNOWHUSH_HUB=ws://127.0.0.1:8765
 Snowhush.exe
 ```
+
+or the first line of `%LOCALAPPDATA%\Snowhush\hub.txt` (`ws://127.0.0.1:8765`), which also works when it is started
+from the Start menu or at login. Snowhush's log in the same folder says `hub: ws://...` when it took the address,
+or `hub: off` when it found none.
+
+`http://127.0.0.1:8765/test` is a page for the Firefox extension with every kind of element and a panel that shows who is
+connected; `http://127.0.0.1:8765/status` is the same as JSON.
 
 Only `ws://` addresses on this machine (`127.0.0.1`, `localhost`, `[::1]`) are accepted.
 
